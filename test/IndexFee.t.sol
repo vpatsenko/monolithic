@@ -31,10 +31,7 @@ contract IndexFeeTest is Test {
         aaplPool = new MockPool(address(aapl), address(usdc), 200e18);
         IIndex.Stock[] memory genesis = new IIndex.Stock[](1);
         genesis[0] = IIndex.Stock({
-            asset: address(aapl),
-            allocationBips: 10_000,
-            priceFeed: address(aaplFeed),
-            pool: address(aaplPool)
+            asset: address(aapl), allocationBips: 10_000, priceFeed: address(aaplFeed), pool: address(aaplPool)
         });
         index = new Index(genesis);
     }

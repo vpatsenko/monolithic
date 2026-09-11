@@ -171,11 +171,7 @@ contract MonoHook is IMonoHook, BaseHook, Ownable {
         PoolId id = key.toId();
         int64 e = SafeCastLib.toInt64(int256(tick) * PRECISION);
         observations[id] = Observation({
-            emaStrike: e,
-            emaThrottle: e,
-            emaGate: e,
-            lastUpdate: uint32(block.timestamp),
-            initialized: true
+            emaStrike: e, emaThrottle: e, emaGate: e, lastUpdate: uint32(block.timestamp), initialized: true
         });
         emit ObservationSeeded(id, tick);
         return IHooks.afterInitialize.selector;

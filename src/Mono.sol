@@ -56,12 +56,9 @@ contract Mono is IMono, ERC20, AccessControl {
         return "MONO";
     }
 
-
     function totalIndex() public view override returns (uint256) {
         return address(index).balanceOf(address(this));
     }
-
-
 
     /// @notice Mint MONO against INDEX paid in. The first call seeds the vault and sets the first price
     /// and the later call rely on that price
@@ -207,8 +204,7 @@ contract Mono is IMono, ERC20, AccessControl {
         // Unreachable while the vault holds anything — there is no outflow — but a zero floor
         // would make the ratio meaningless rather than merely large.
         if (floor == 0) revert InvalidPrice();
-        return SafeCastLib.toInt256(FixedPointMathLib.fullMulDiv(poolPrice(), BIPS, floor))
-            - SafeCastLib.toInt256(BIPS);
+        return SafeCastLib.toInt256(FixedPointMathLib.fullMulDiv(poolPrice(), BIPS, floor)) - SafeCastLib.toInt256(BIPS);
     }
 
     /// @notice how much mono we can mint for the given amount of index

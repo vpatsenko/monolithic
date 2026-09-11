@@ -38,7 +38,9 @@ contract PowBench is Test {
         return w;
     }
 
-    function noop() public pure returns (uint256) { return 1; }
+    function noop() public pure returns (uint256) {
+        return 1;
+    }
 
     function test_gas_pow_by_exponent() public view {
         uint256 gb = gasleft();

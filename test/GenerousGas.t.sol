@@ -94,6 +94,7 @@ contract GenerousGasTest is Test {
         g = gasleft();
         auction.sync(type(uint256).max);
         settle_ = g - gasleft();
+        assertGt(auction.tokensSold(), 0, "benchmark must actually sell");
     }
 
     function test_gas_byWindowSize() public {
@@ -136,6 +137,8 @@ contract GenerousGasTest is Test {
         uint256 g = gasleft();
         auction.sync(type(uint256).max);
         uint256 used = g - gasleft();
+        assertEq(auction.settleCursor(), 0, "the walk must complete");
+        assertGt(auction.tokensSold(), 0, "the floor tick must be reached and served");
         emit log_named_uint("skip 200 empty ticks + 1 live, settle total", used);
         emit log_named_uint("  approx per empty tick", used / dead);
     }

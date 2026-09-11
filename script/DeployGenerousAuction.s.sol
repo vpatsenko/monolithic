@@ -85,12 +85,14 @@ contract DeployGenerousAuction is Script {
     ///          cast call --rpc-url chain46630 <AuctionBids> 'getBlock()(uint256)'
     ///
     ///      then add ~20 blocks of headroom so emission begins after the funding transfer below has
-    ///      landed. A `START_BLOCK` in the past is not fatal — it just accrues a backlog that the
-    ///      first sync releases in one lump.
+    ///      landed. A `START_BLOCK` in the past is REJECTED by the constructor (a stale start would
+    ///      open the sale with a backlog already owed — 2.3 days stale is the whole sale); if the
+    ///      deploy lands late, read the height again and redeploy.
     uint64 internal constant START_BLOCK = 11_494_800;
 
-    /// @dev Last block that accrues emission; 0 = open-ended. A trailing partial round never emits,
-    ///      so a life that is not a whole multiple of `ROUND_BLOCKS` stops one boundary early.
+    /// @dev Last block that accrues emission; 0 = open-ended. Accrual is block-linear, so a life
+    ///      that is not a whole multiple of `ROUND_BLOCKS` emits the exact pro-rata tail. A bounded
+    ///      life must be at least one round long (constructor check).
     uint64 internal constant END_BLOCK = 0;
 
     /// @dev `EMISSION_PER_ROUND` MONO released every `ROUND_BLOCKS` blocks. The only two values
@@ -125,17 +127,32 @@ contract DeployGenerousAuction is Script {
 
     // ---------------------------------------------------------------- run
 
+    /// @notice PHASE 1 of the deploy. The old single-shot `run()` was a deadlock: `setPool`
+    ///         demands a pool paired with a Mono that does not exist until this very run, and
+    ///         the auction constructor demands that pool be live and in-range — neither can
+    ///         precede the other inside one atomic script. So: deploy Mono here, create and
+    ///         seed the MONO/INDEX pool out of band against the printed address, then run
+    ///         phase 2 (`run()`) with MONO_ADDRESS set.
+    function deployMono() external returns (Mono mono) {
+        address wallet = vm.envAddress("WALLET_ADDRESS");
+        vm.startBroadcast(vm.envUint("WALLET_PRIVATE_KEY"));
+        mono = new Mono(IIndex(CURRENCY), GENESIS_CAP);
+        MockIndex(CURRENCY).approve(address(mono), GENESIS_ASSETS);
+        mono.mint(GENESIS_SHARES, GENESIS_ASSETS, wallet);
+        vm.stopBroadcast();
+        console.log("Mono deployed :", address(mono));
+        console.log("Next: create + seed the MONO/INDEX pool, then `run()` with MONO_ADDRESS set.");
+    }
+
+    /// @notice PHASE 2: wire the pool and deploy the auction against an EXISTING Mono.
     function run() external returns (GenerousAuction auction, Mono mono) {
         // The one privileged role goes to the deploying wallet. `admin` can do exactly one thing — re-schedule emission from a future boundary. It cannot
         // touch the book, the escrow, or anything already owed.
         address wallet = vm.envAddress("WALLET_ADDRESS");
+        mono = Mono(vm.envAddress("MONO_ADDRESS"));
 
         vm.startBroadcast(vm.envUint("WALLET_PRIVATE_KEY"));
 
-        // The deployer is owner only long enough to open the book.
-        mono = new Mono(IIndex(CURRENCY), GENESIS_CAP);
-        MockIndex(CURRENCY).approve(address(mono), GENESIS_ASSETS);
-        mono.mint(GENESIS_SHARES, GENESIS_ASSETS, wallet);
         // One shot, and it has to happen before the auction: its constructor reads the premium.
         mono.setPool(vm.envAddress("MONO_POOL_ADDRESS"));
 

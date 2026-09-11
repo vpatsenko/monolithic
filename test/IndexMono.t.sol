@@ -39,10 +39,7 @@ contract IndexMonoTest is Test {
 
         IIndex.Stock[] memory genesis = new IIndex.Stock[](1);
         genesis[0] = IIndex.Stock({
-            asset: address(aapl),
-            allocationBips: 10_000,
-            priceFeed: address(aaplFeed),
-            pool: address(aaplPool)
+            asset: address(aapl), allocationBips: 10_000, priceFeed: address(aaplFeed), pool: address(aaplPool)
         });
         index = new Index(genesis);
         mono = new Mono(index, GENESIS_CAP);
@@ -513,16 +510,10 @@ contract IndexMonoTest is Test {
 
         IIndex.Stock[] memory split = new IIndex.Stock[](2);
         split[0] = IIndex.Stock({
-            asset: address(aapl),
-            allocationBips: 6_000,
-            priceFeed: address(aaplFeed),
-            pool: address(aaplPool)
+            asset: address(aapl), allocationBips: 6_000, priceFeed: address(aaplFeed), pool: address(aaplPool)
         });
         split[1] = IIndex.Stock({
-            asset: address(nvda),
-            allocationBips: 4_000,
-            priceFeed: address(nvdaFeed),
-            pool: address(nvdaPool)
+            asset: address(nvda), allocationBips: 4_000, priceFeed: address(nvdaFeed), pool: address(nvdaPool)
         });
 
         // Duplicate stock.
@@ -535,25 +526,24 @@ contract IndexMonoTest is Test {
         // Zero address stock.
         IIndex.Stock[] memory zeroAsset = new IIndex.Stock[](1);
         zeroAsset[0] = IIndex.Stock({
-            asset: address(0),
-            allocationBips: 10_000,
-            priceFeed: address(aaplFeed),
-            pool: address(aaplPool)
+            asset: address(0), allocationBips: 10_000, priceFeed: address(aaplFeed), pool: address(aaplPool)
         });
         vm.expectRevert(IIndex.InvalidAsset.selector);
         new Index(zeroAsset);
 
         // Zero price feed.
         IIndex.Stock[] memory zeroFeed = new IIndex.Stock[](1);
-        zeroFeed[0] =
-            IIndex.Stock({asset: address(aapl), allocationBips: 10_000, priceFeed: address(0), pool: address(aaplPool)});
+        zeroFeed[0] = IIndex.Stock({
+            asset: address(aapl), allocationBips: 10_000, priceFeed: address(0), pool: address(aaplPool)
+        });
         vm.expectRevert(IIndex.InvalidPriceFeed.selector);
         new Index(zeroFeed);
 
         // Zero pool: a feed with nothing to check it against is not a listable stock.
         IIndex.Stock[] memory zeroPool = new IIndex.Stock[](1);
-        zeroPool[0] =
-            IIndex.Stock({asset: address(aapl), allocationBips: 10_000, priceFeed: address(aaplFeed), pool: address(0)});
+        zeroPool[0] = IIndex.Stock({
+            asset: address(aapl), allocationBips: 10_000, priceFeed: address(aaplFeed), pool: address(0)
+        });
         vm.expectRevert(IIndex.InvalidPool.selector);
         new Index(zeroPool);
 

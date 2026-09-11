@@ -334,11 +334,7 @@ contract Index is IIndex, ERC20, Ownable, ReentrancyGuardTransient {
         if (maxSlipBips > MAX_SALE_SLIP_BIPS) revert SlippageTooWide();
 
         sales[sellToken] = Sale({
-            buyToken: buyToken,
-            dailyCap: dailyCap,
-            soldToday: 0,
-            windowStart: block.timestamp,
-            maxSlipBips: maxSlipBips
+            buyToken: buyToken, dailyCap: dailyCap, soldToday: 0, windowStart: block.timestamp, maxSlipBips: maxSlipBips
         });
 
         emit SaleOpened(sellToken, buyToken, dailyCap, maxSlipBips);
@@ -583,8 +579,9 @@ contract Index is IIndex, ERC20, Ownable, ReentrancyGuardTransient {
         uint256 rate = supply == 0 ? 0 : feeRate;
         for (uint256 i; i < _assets.length; ++i) {
             // Empty pot: genesis parity, one raw unit per share of every stock.
-            uint256 base =
-                supply == 0 ? shares : FixedPointMathLib.fullMulDivUp(_contractAssetBalance(_assets[i]), shares, supply);
+            uint256 base = supply == 0
+                ? shares
+                : FixedPointMathLib.fullMulDivUp(_contractAssetBalance(_assets[i]), shares, supply);
             amounts[i] = rate == 0 ? base : FixedPointMathLib.fullMulDivUp(base, FEE_SCALE + rate, FEE_SCALE);
             feeAmounts[i] = amounts[i] - base;
         }
@@ -770,9 +767,10 @@ contract Index is IIndex, ERC20, Ownable, ReentrancyGuardTransient {
         (uint256 price, uint256 unit) = _price(asset);
         uint256 decimals = 10 ** IERC20Metadata(asset).decimals();
         if (roundUp) {
-            return FixedPointMathLib.fullMulDivUp(
-                FixedPointMathLib.fullMulDivUp(value, decimals, VALUE_SCALE), unit, price
-            );
+            return
+                FixedPointMathLib.fullMulDivUp(
+                    FixedPointMathLib.fullMulDivUp(value, decimals, VALUE_SCALE), unit, price
+                );
         }
         uint256 usd = FixedPointMathLib.fullMulDiv(value, decimals, VALUE_SCALE);
         return FixedPointMathLib.fullMulDiv(usd, unit, price);

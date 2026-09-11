@@ -25,11 +25,20 @@ contract SmokeTest is Script {
     /// @dev At the floor tick, so `prevTick` is 0 and no traversal is needed.
     uint256 internal constant PRICE = 1e18;
     uint128 internal constant BID = 100e18;
+    /// @dev Escrow without stake buys nothing (the strict rule), so the bid needs a stake first.
+    uint256 internal constant STAKE = 1e18;
 
     function bid() external {
-        address me = vm.envAddress("WALLET_ADDRESS");
+        uint256 pk = vm.envUint("WALLET_PRIVATE_KEY");
+        address me = vm.addr(pk);
+        // `submitBid` requires `owner == msg.sender`, so the owner IS the broadcasting key —
+        // deriving it here rather than reading a second env removes a silent way to get
+        // `Unauthorized` from two settings that disagree.
+        require(me == vm.envAddress("WALLET_ADDRESS"), "WALLET_ADDRESS is not WALLET_PRIVATE_KEY's address");
 
-        vm.startBroadcast(vm.envUint("WALLET_PRIVATE_KEY"));
+        vm.startBroadcast(pk);
+        MONO.approve(address(AUCTION), STAKE);
+        AUCTION.stake(STAKE);
         INDEX.approve(address(AUCTION), BID);
         AUCTION.submitBid(PRICE, BID, me, 0);
         vm.stopBroadcast();
@@ -56,7 +65,7 @@ contract SmokeTest is Script {
     }
 
     function _report(address me) internal view {
-        (, uint128 amount, uint128 tokensOwed,,) = AUCTION.positions(me);
+        (, uint128 amount, uint128 tokensOwed,,,,) = AUCTION.positions(me);
 
         console.log("--- auction ---");
         console.log("emittedToDate   :", AUCTION.emittedToDate());

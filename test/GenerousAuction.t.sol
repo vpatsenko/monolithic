@@ -209,8 +209,10 @@ contract GenerousAuctionTest is Test {
         uint256 supply = auction.saleSupply();
         // Far past any round boundary: the schedule alone would owe astronomically more.
         vm.roll(block.number + K * 1_000_000);
-        assertGt(auction.emittedToDate(), supply, "the schedule ran well past the sale");
-        assertEq(auction.due(), supply, "but only the sale's own supply is ever distributable");
+        assertEq(auction.emittedToDate(), supply, "the sale's own supply is the ceiling");
+        assertEq(auction.due(), supply, "and only that is ever distributable");
+        // The uncapped schedule is what the cap is holding back.
+        assertGt(uint256(auction.emissionPerRound()) * 1_000_000, supply, "the schedule would owe more");
     }
 
     /// One round releases the paper's 150-token draw, so a single elapsed round reproduces A.9.
@@ -529,12 +531,11 @@ contract GenerousAuctionTest is Test {
         assertGe(mono.nav(), 2e18, "and NAV did not fall");
         assertEq(_owed(b0), 0, "the position is settled, not left dangling");
 
-        // The haircut is POOLED and pro-rata, not per-position and not a race. Every claimant is
-        // scaled by the same `tokensMinted / tokensSold`, whatever price they filled at.
-        uint256 ratioNum = auction.tokensMinted();
-        assertLt(ratioNum, sold, "the pack was clamped");
-        assertEq(got, owed * ratioNum / sold, "b0 took exactly the shared ratio");
-        assertEq(auction.claim(b2), owed2 * ratioNum / sold, "and so does a later claimant");
+        // The haircut is POOLED and order-independent: every claimant is scaled by the same
+        // remaining-pot ratio, whatever price they filled at and whenever they claim.
+        assertLt(auction.tokensMinted(), sold, "the pack was clamped");
+        uint256 gotB2 = auction.claim(b2);
+        assertApproxEqRel(gotB2 * 1e18 / owed2, got * 1e18 / owed, 1e9, "identical haircut ratio for a later claimant");
     }
 
     /// After the handoff the auction is the only minter; the deployer cannot mint again.
@@ -551,37 +552,41 @@ contract GenerousAuctionTest is Test {
 
     // ------------------------------------------------------------------ emission schedule
 
-    /// Emission is a schedule, not a transaction: nothing accrues before `startBlock`, one round's
-    /// worth accrues per `K` blocks, and a trailing partial round never emits.
+    /// Emission is a schedule, not a transaction — and BLOCK-LINEAR: `R/K` per block, nothing
+    /// before `startBlock`, no boundary ever materialising a chunk atomically (the atomic chunk
+    /// made the first post-boundary sync a gameable weight snapshot; round-4 review).
     function test_emissionAccruesPerRound() public {
         assertEq(auction.emittedToDate(), 0, "nothing at the start block");
 
         vm.roll(block.number + K - 1);
-        assertEq(auction.emittedToDate(), 0, "partial round emits nothing");
+        assertEq(auction.emittedToDate(), 1485e17, "K-1 blocks accrue their exact pro-rata");
 
         vm.roll(block.number + 1);
-        assertEq(auction.emittedToDate(), 150e18, "one round");
+        assertEq(auction.emittedToDate(), 150e18, "one full round at the boundary");
         assertEq(auction.roundsElapsed(), 1);
 
         vm.roll(block.number + 3 * K + K / 2);
-        assertEq(auction.emittedToDate(), 600e18, "four rounds, the half does not count");
-        assertEq(auction.roundsElapsed(), 4);
+        assertEq(auction.emittedToDate(), 675e18, "4.5 rounds, linearly");
+        assertEq(auction.roundsElapsed(), 4, "roundsElapsed still floors: it counts boundaries");
     }
 
     /// A thousand silent rounds cost one sweep, and land where a thousand sweeps would: `_pour` is
     /// parameterised by the scalar `C` and relative weights do not depend on the anchor.
     function test_lazySyncEqualsRoundByRound() public {
         _a9Book();
-        _settle();
+        vm.roll(block.number + 3 * K); // three silent rounds, ONE sweep
+        auction.sync(64);
         (uint256 lazyLive, uint256 lazyOwed) = auction.positionOf(b2);
         uint256 lazyRaised = auction.currencyRaised();
 
-        // Same book, same total supply, but drip-fed a third of a round at a time.
+        // Same book, same emission, but settled round by round instead of in one sweep.
         setUp();
         _a9Book();
         vm.roll(block.number + K);
         auction.sync(64);
+        vm.roll(block.number + K);
         auction.sync(64);
+        vm.roll(block.number + K);
         auction.sync(64);
         (uint256 stepLive, uint256 stepOwed) = auction.positionOf(b2);
 
@@ -614,7 +619,7 @@ contract GenerousAuctionTest is Test {
 
         vm.prank(seller);
         auction.setRoundParams(K, 10e18);
-        assertEq(auction.emittedToDate(), 300e18, "the two elapsed rounds keep the old rate");
+        assertEq(auction.emittedToDate(), 315e18, "elapsed blocks keep the old rate, linearly");
 
         // The round in flight still finishes at 150.
         vm.roll(block.number + K - 10);
@@ -670,9 +675,6 @@ contract GenerousAuctionTest is Test {
         vm.roll(block.number + 10 * K);
         assertEq(auction.emittedToDate(), 0, "zero rate emits nothing");
         assertEq(auction.due(), 0, "so no carry accumulates");
-
-        // Fund, then flip the switch.
-        assertEq(auction.due(), 0, "funding alone releases nothing");
 
         vm.prank(seller);
         auction.setRoundParams(K, 150e18);
