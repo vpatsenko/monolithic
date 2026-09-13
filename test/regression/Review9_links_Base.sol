@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Shared deploy + the strongest two-chain tick-list checker for review round 9 (lens: links).
@@ -18,7 +17,7 @@ import {TestERC20} from "../TestERC20.sol";
 ///     cannot disagree about where a price belongs);
 ///   * every tick with `capTokens != 0` must be on the SWEEP's chain (down from `highestTick`);
 ///   * a separate position-side predicate: a funded, staked bid must sit on the sweep chain.
-abstract contract Review9LinksBase is Test {
+abstract contract Review9LinksBase is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -52,8 +51,7 @@ abstract contract Review9LinksBase is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         auction = new GenerousAuction(
             IGenerousAuction.Config({

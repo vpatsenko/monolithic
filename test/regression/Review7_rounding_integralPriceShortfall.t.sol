@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Review 7, rounding lens: the supply-exhaust step of `_pourTick` (L864,
@@ -20,7 +19,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// actually deducted. That gap is invisible while other bidders' live escrow sits in the
 /// contract; the moment the escrow leaves, `_mintPack` cannot pull `assets` and every `claim`
 /// reverts.
-contract Review7IntegralPriceShortfallTest is Test {
+contract Review7IntegralPriceShortfallTest is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -42,8 +41,7 @@ contract Review7IntegralPriceShortfallTest is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
         auction = new GenerousAuction(
             IGenerousAuction.Config({
                 token: address(mono),

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// REVIEW 7 — KILL CHAIN D: splice orphan-hide (round-6 #1/#2) + `finalize`'s "undrainable"
@@ -30,7 +29,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// Honest counter-move (written in): after the flip, the victim tries a fresh sync AND a re-bid
 /// to reclaim the stranded emission. Both are shown to fail — `due()` is 0 and re-bidding reverts
 /// `AuctionEnded` past `endBlock`. There is no exit.
-contract Review7ChainOrphanFinalizeDestroysCarry is Test {
+contract Review7ChainOrphanFinalizeDestroysCarry is MonoPoolBase {
     uint256 internal constant Q96 = 1 << 96;
     uint256 internal constant FLOOR = 1e18;
     uint256 internal constant SPACING = 1e16;
@@ -54,8 +53,7 @@ contract Review7ChainOrphanFinalizeDestroysCarry is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         END = uint64(block.number) + 5 * K; // 5 rounds of life
 

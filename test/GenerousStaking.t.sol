@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../src/GenerousAuction.sol";
 import {Mono} from "../src/Mono.sol";
 import {IGenerousAuction} from "../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../src/interfaces/IIndex.sol";
-import {MockPool} from "./MockPool.sol";
+import {MonoPoolBase} from "./MonoPoolBase.sol";
 import {TestERC20} from "./TestERC20.sol";
 
 /// Staking and the stake-weighted intra-tick split of `src/GenerousAuction.sol`.
@@ -14,7 +13,7 @@ import {TestERC20} from "./TestERC20.sol";
 /// The anchor is the worked example of `docs/staked-generous-auction.md` §5: one tick at 1.00,
 /// stakes 50/40/10 against budgets 5/100/100, a 95-token pour, published answer 5 / 72 / 18 —
 /// the whale-by-stake dies on its own budget cap and its excess re-flows to its co-stakers.
-contract GenerousStakingTest is Test {
+contract GenerousStakingTest is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -43,8 +42,7 @@ contract GenerousStakingTest is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         auction = new GenerousAuction(
             IGenerousAuction.Config({
@@ -802,8 +800,7 @@ contract GenerousStakingTest is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
         auction = new GenerousAuction(
             IGenerousAuction.Config({
                 token: address(mono),
@@ -842,8 +839,7 @@ contract GenerousStakingTest is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
         uint64 start = uint64(block.number + 1000);
         auction = new GenerousAuction(
             IGenerousAuction.Config({

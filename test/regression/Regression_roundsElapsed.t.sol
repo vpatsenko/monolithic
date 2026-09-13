@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// `roundsElapsed()` used to divide the whole span since `startBlock` by whatever `roundBlocks`
@@ -14,7 +13,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// queued something in the same block (round-11). It now carries completed rounds at the anchor
 /// and applies an already-effective queued generation itself. Checked here against an
 /// independent model that walks the schedule one boundary at a time.
-contract RegressionRoundsElapsed is Test {
+contract RegressionRoundsElapsed is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -47,8 +46,7 @@ contract RegressionRoundsElapsed is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
         start = uint64(block.number);
         auction = new GenerousAuction(
             IGenerousAuction.Config({
@@ -112,8 +110,7 @@ contract RegressionRoundsElapsed is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
         uint64 later = uint64(block.number) + 500;
         auction = new GenerousAuction(
             IGenerousAuction.Config({

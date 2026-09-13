@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Shared harness for the round-8 `access` lens. Same deployment shape as
 /// test/GenerousStaking.t.sol: Index/Mono at NAV 1.0, pool at 1.25, floor 1e18, spacing 1e16,
 /// q = Q96/2, windowTicks 8, roundBlocks 100.
-abstract contract Review8AccessBase is Test {
+abstract contract Review8AccessBase is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -38,8 +37,7 @@ abstract contract Review8AccessBase is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         auction = new GenerousAuction(
             IGenerousAuction.Config({

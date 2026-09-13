@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Review 6 / integration lens: the tick list an indexer rebuilds from `BidSubmitted` events
@@ -14,7 +13,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// a spliced-out dead tick as `prevTick` instead of reverting `BadPrevHint`. A later, correct
 /// re-insert of that dead tick then rewires the list around the new bid and orphans it from
 /// the downward walk `_gather` uses — its escrow never fills.
-contract Review6IntegrationSplicedHintOrphan is Test {
+contract Review6IntegrationSplicedHintOrphan is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -42,8 +41,7 @@ contract Review6IntegrationSplicedHintOrphan is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         auction = new GenerousAuction(
             IGenerousAuction.Config({

@@ -16,6 +16,7 @@ import {PoolId} from "v4-core/types/PoolId.sol";
 import {ModifyLiquidityParams, SwapParams} from "v4-core/types/PoolOperation.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
 import {PoolModifyLiquidityTest} from "v4-core/test/PoolModifyLiquidityTest.sol";
+import {HookMiner} from "v4-periphery/utils/HookMiner.sol";
 
 import {MonoHook} from "../src/MonoHook.sol";
 import {IMonoHook} from "../src/interfaces/IMonoHook.sol";
@@ -26,10 +27,9 @@ import {MockIndex} from "../src/MockIndex.sol";
 contract MonoHookTest is Test {
     using StateLibrary for IPoolManager;
 
-    // D24 final: strike = the round length, throttle, gate. Strictly increasing.
+    // HANDBOOK §4: strike = the round length; gate and throttle share the slow one.
     uint32 constant TAU_STRIKE = 1 minutes;
-    uint32 constant TAU_THROTTLE = 5 minutes;
-    uint32 constant TAU_GATE = 15 minutes;
+    uint32 constant TAU_SLOW = 5 minutes;
 
     uint160 constant HOOK_FLAGS = uint160(
         Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
@@ -77,7 +77,7 @@ contract MonoHookTest is Test {
         address flagged = address(uint160(0x4444 << 144) | HOOK_FLAGS);
         deployCodeTo(
             "MonoHook.sol:MonoHook",
-            abi.encode(IPoolManager(address(manager)), mono, treasury, TAU_STRIKE, TAU_THROTTLE, TAU_GATE),
+            abi.encode(IPoolManager(address(manager)), mono, treasury, TAU_STRIKE, TAU_SLOW),
             flagged
         );
         hook = MonoHook(flagged);
@@ -184,8 +184,8 @@ contract MonoHookTest is Test {
         manager.initialize(foreign, TickMath.getSqrtPriceAtTick(0));
     }
 
-    /// The whole point of three horizons: the same displacement reaches them at different speeds.
-    function test_strikeLeadsThrottleLeadsGate() public {
+    /// The point of the fast/slow pair: the same displacement reaches them at different speeds.
+    function test_strikeLeadsTheSlowHorizon() public {
         _swapExactIn(true, 1e19);
         int24 live = _liveTick();
         assertGt(_fall(live), 100, "setup: price did not move");
@@ -195,12 +195,25 @@ contract MonoHookTest is Test {
 
         int256 s = _fall(_mean(IMonoHook.Horizon.Strike));
         int256 t = _fall(_mean(IMonoHook.Horizon.Throttle));
-        int256 g = _fall(_mean(IMonoHook.Horizon.Gate));
 
-        assertGt(s, t, "strike must lead throttle");
-        assertGt(t, g, "throttle must lead gate");
-        assertGt(g, 0, "gate must have moved at all");
+        assertGt(s, t, "strike must lead the slow horizon");
+        assertGt(t, 0, "the slow horizon must have moved at all");
         assertLt(s, _fall(live), "strike cannot overshoot the live tick");
+    }
+
+    /// §4: "gate and throttle read one EMA". Not merely equal at the final values — the SAME
+    /// reading, at every point of a displacement, which is what one EMA means.
+    function test_gateAndThrottleAreOneEma() public {
+        assertEq(_mean(IMonoHook.Horizon.Gate), _mean(IMonoHook.Horizon.Throttle), "at rest");
+
+        _swapExactIn(true, 1e19);
+        for (uint256 i; i < 4; ++i) {
+            vm.warp(block.timestamp + 90);
+            _swapExactIn(true, 1);
+            assertEq(
+                _mean(IMonoHook.Horizon.Gate), _mean(IMonoHook.Horizon.Throttle), "mid-decay they must not diverge"
+            );
+        }
     }
 
     /// A displacement pushed and released inside ONE block moves nothing: the tick that accrues is
@@ -266,21 +279,28 @@ contract MonoHookTest is Test {
     ///      and runs first, so the surfaced error is its one, not `InvalidHorizons`.
     function test_transposedHorizonsDoNotDeploy() public {
         vm.expectRevert();
-        this.deployWithHorizons(TAU_THROTTLE, TAU_STRIKE, TAU_GATE);
+        this.deployWithHorizons(TAU_SLOW, TAU_STRIKE);
     }
 
-    function test_orderingHoldsAtTheFinalValues() public view {
+    /// Equal horizons are a collapse, not a configuration: the fast leg would stop being fast and
+    /// `max(spot, EMA_1m)` would read a 5-minute price.
+    function test_equalHorizonsDoNotDeploy() public {
+        vm.expectRevert();
+        this.deployWithHorizons(TAU_SLOW, TAU_SLOW);
+    }
+
+    /// The §4 numbers, which the old strictly-increasing triple could not express: gate and
+    /// throttle are both 5 minutes, so they are one EMA rather than two that must be kept in step.
+    function test_horizonsAreTheHandbookNumbers() public view {
         assertEq(hook.tauStrike(), 60);
-        assertEq(hook.tauThrottle(), 300);
-        assertEq(hook.tauGate(), 900);
-        assertLt(hook.tauStrike(), hook.tauThrottle());
-        assertLt(hook.tauThrottle(), hook.tauGate());
+        assertEq(hook.tauSlow(), 300);
+        assertLt(hook.tauStrike(), hook.tauSlow());
     }
 
-    function deployWithHorizons(uint32 s_, uint32 t_, uint32 g_) external {
+    function deployWithHorizons(uint32 s_, uint32 slow_) external {
         deployCodeTo(
             "MonoHook.sol:MonoHook",
-            abi.encode(IPoolManager(address(manager)), mono, treasury, s_, t_, g_),
+            abi.encode(IPoolManager(address(manager)), mono, treasury, s_, slow_),
             address(uint160(0x5555 << 144) | HOOK_FLAGS)
         );
     }
@@ -501,6 +521,28 @@ contract MonoHookTest is Test {
             PoolSwapTest.TestSettings(false, false),
             ""
         );
+    }
+
+    /// The address IS the permission set, and `script/DeployMonoHook.s.sol` mines for one specific
+    /// flag word. If that word and `getHookPermissions()` ever drift apart, `BaseHook`'s
+    /// constructor rejects the mined address — on deploy day, against a pool that can never be
+    /// re-hooked. Mining and deploying for real here is what proves they agree.
+    function test_theMinedAddressSatisfiesTheHookItDeploys() public {
+        // Kept identical to the script's `flags`, and to `agent-docs/MonoHook.md`'s 0x10CC.
+        uint160 flags = uint160(
+            Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+        );
+        assertEq(flags, 0x10CC, "the documented flag word");
+
+        bytes memory args = abi.encode(IPoolManager(address(manager)), mono, treasury, TAU_STRIKE, TAU_SLOW);
+        (address mined, bytes32 salt) = HookMiner.find(address(this), flags, type(MonoHook).creationCode, args);
+
+        // `BaseHook`'s constructor asserts the deployed address carries exactly the permissions
+        // `getHookPermissions()` declares, so this line reverts if the mine was for the wrong set.
+        MonoHook fresh = new MonoHook{salt: salt}(IPoolManager(address(manager)), mono, treasury, TAU_STRIKE, TAU_SLOW);
+        assertEq(address(fresh), mined, "mined address not hit");
+        assertEq(uint160(address(fresh)) & 0x3FFF, flags, "the address does not carry the flags");
     }
 
     function test_onlyOwnerMayQueue() public {

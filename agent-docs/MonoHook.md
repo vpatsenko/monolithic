@@ -1,17 +1,22 @@
 # MonoHook
 
-`src/MonoHook.sol` — the MONO/INDEX Uniswap v4 hook. Two jobs: the price accumulator of
-HANDBOOK §3.6 and the trade tax of §3.4.
-Interface: `src/interfaces/IMonoHook.sol`. Tests: `test/MonoHook.t.sol`.
-Rulings implemented here: `MONOHOOK-REVIEW.md` (D24).
+`src/MonoHook.sol` — the MONO/INDEX Uniswap v4 hook. Three jobs: the price accumulator of
+HANDBOOK §3.6, the trade tax of §3.4, and the wall of §3.3.
+Interface: `src/interfaces/IMonoHook.sol`. Tests: `test/MonoHook.t.sol`, `test/MonoWall.t.sol`.
+Rulings implemented here: `MONOHOOK-REVIEW.md` (D24), D25 (wall in the hook).
 
-## Why both jobs are in one contract
+## Why all three jobs are in one contract
 
 A v4 hook's permissions are encoded in its **address**, and the address is inside the `PoolKey`.
 A hook that gains a permission later is a different hook, which means a different pool and a POL
 migration. **Anything this hook cannot do on the day it ships, it can never do.** That is why the
 tax is here at deploy rather than "added to `_beforeSwap` later", and why the oracle-only version
 must never reach mainnet.
+
+The wall is the same argument taken one step further: D25 moved it out of a keeper and into
+`_beforeSwap` precisely because a keeper cannot be atomic with the sell it is defending against.
+It needs no permission bit the tax did not already require, so it costs nothing at the address —
+see **Deploying**.
 
 ## Why the oracle has to exist
 
@@ -23,7 +28,7 @@ v4 counterpart.
 ## An EMA, not a ring buffer
 
 v3's oracle is an array of `(timestamp, tickCumulative)` samples with a binary search over it. At
-τ of 15 minutes a buffer would be perfectly affordable — the sizing argument is **not** what
+τ of a few minutes a buffer would be perfectly affordable — the sizing argument is **not** what
 decides this. Two things do:
 
 - **`grow()` is griefable and someone has to pay it.** Cardinality is a live operational chore
@@ -40,16 +45,28 @@ The trade, named honestly: an EMA has **no fixed cutoff**. A boxcar TWAP forgets
 than its window; an EMA's tail decays but never reaches zero. For a gate, a rate and a strike leg,
 "recent matters more, old fades" is the property being bought.
 
-### The three horizons
+### The horizons: three names, two EMAs
 
 They are **`tau`, not window widths**: a displacement held `t` seconds moves the reading
 `1 - exp(-t/tau)` of the way, so `tau` is the 63% point.
 
-| Horizon | Consumer | τ (D24, final) |
-| --- | --- | --- |
-| `Strike` | the money path, composed by the caller as `max(spot, strike)` | **1 min** |
-| `Throttle` | accrual rate + tap refill | **5 min** |
-| `Gate` | the LIVE/PAUSED chatter-damper on the 15% threshold | **15 min** |
+| Horizon | Consumer | τ (HANDBOOK §4) | EMA |
+| --- | --- | --- | --- |
+| `Strike` | the money path, composed by the caller as `max(spot, strike)` | **1 min** | `emaStrike` |
+| `Throttle` | accrual rate + tap refill | **5 min** | `emaSlow` |
+| `Gate` | the LIVE/PAUSED chatter-damper on the 15% threshold | **5 min** | `emaSlow` |
+
+**Gate and throttle are one EMA, not two that agree.** §4 is explicit — "one EMA for
+gate+throttle", "gate and throttle read one EMA" — and the earlier 1/5/15 triple could not express
+it: the constructor demanded *strictly* increasing horizons, so the §4 numbers reverted
+`InvalidHorizons` at deploy. Collapsing them is the literal reading and it is also simply better
+code: 64 bits less per pool and one `_decay` less per swap.
+
+The enum keeps three members anyway. `Throttle` and `Gate` are separate *decisions* — a rate and a
+door — and a call site should say which it is making; if a re-sim ever splits them again, nothing
+at the call sites moves. For the same reason there is no `tauThrottle()`/`tauGate()` pair: two
+accessors for one number read as two knobs that happen to agree, and invite a caller to believe
+they can be set apart. There is `tauStrike()` and `tauSlow()`.
 
 D24 collapsed these from day-length windows. Day lengths solved a problem the round structure
 already solves: the prize per round is lot-bounded, so every attack must hold a displaced price
@@ -200,17 +217,132 @@ ERC-6909 claim and settled in the crank. Claims would save perhaps 8k a swap at 
 `unlockCallback` and a second accounting surface; `balanceOf` being the whole ledger is worth more
 today. Revisit if swap gas becomes the binding constraint.
 
+## The wall
+
+§3.3 `[LAW]`. On a MONO → INDEX sell the pool is allowed down to `NAV x (1 - wallTick)` and no
+further; whatever the seller still has left at that point, the hook buys off the vault at the wall
+price and **burns in the same transaction**. Buys are untouched.
+
+### It does not compute the split — it asks the pool for it
+
+The obvious implementation solves `dx = L x (1/sqrtT - 1/sqrtC)` for the pool's leg. We do not.
+`_wall` re-enters `poolManager.swap` on its own pool with `sqrtPriceLimitX96` set to the wall
+price and hands it the whole (post-tax) input; v4's own engine takes what it can and stops dead at
+the bound, and the returned delta says how much that was. The remainder is the wall's.
+
+What that buys:
+
+- **"The pool never ends below the wall" is enforced by the price limit, exactly**, across any
+  liquidity shape. No approximation to audit. `Mono.premiumCloseAmount` carries a standing
+  `ponytail:` note that the same closed form is single-range-only and silently understates once a
+  tick is crossed — that note would have become a correctness bug here.
+- **The one-sided POL case needs no special handling.** §3.5's POL is MONO-only from NAV up, so
+  on day 0 there is no bid at all; the inner swap simply takes nothing and the wall fills 100%.
+  Same code path as a book that is merely thin. (`_wall` still skips the inner call when the pool
+  is already at or past the wall, because `Pool.swap` reverts `PriceLimitAlreadyExceeded` rather
+  than no-opping.)
+- **No re-entrancy guard of our own.** `Hooks.beforeSwap` and `Hooks.afterSwap` both open with
+  `if (msg.sender == address(self)) return` — v4 skips a hook's own hooks. So the inner swap does
+  not recurse and does not double-accrue the oracle.
+
+The hook then full-consumes the swap: it returns `+amountIn` on the specified leg and `-out` on
+the unspecified one, so the outer `Pool.swap` is handed `amountToSwap == 0` and returns without
+touching a pool that is already exactly where `_wall` left it.
+
+**Indexers: a wall sell emits two `Swap` events** — the inner one with the pool leg's real
+amounts, then the outer one with zeros. The seller's true fill is the inner `Swap` plus the
+`WallFilled` alongside it, not either on its own.
+
+### Why the burn is the law and not an optimisation
+
+The vault pays `R x (1 - t) x NAV` and retires `R` shares, so the floor moves from `I/S` to
+`(I - R*w)/(S - R)`, which is strictly greater for any `w < NAV`. **The one outflow the vault has
+raises the floor it drains.** Skip the burn and the identical code is a redemption that empties
+the pot. It is also the whole reason `Mono.setWall` can grant an *unbounded* allowance: the only
+thing this hook can do with the pot is lift NAV.
+
+That is also why `wallTickBips` may never be zero. At zero the bid sits exactly at NAV and a fill
+is floor-*neutral*; the tick is what makes the outflow accretive. `MAX_WALL_TICK_BIPS = 1000` is
+the ceiling governance cannot reach — what it really guarantees is that the bid stays strictly
+under NAV, and 10% is simply far more room than the 0.5–1% `[SIM]` range will ever want. The
+launch value is 100 bips, the `0.99 x NAV` §3.2 spells out.
+
+### Arming, and standing down
+
+The hook ships inert. `Mono.setWall(hook)` is a one-shot `DEFAULT_ADMIN_ROLE` call that stores the
+address and grants the allowance together, so `wallArmed()` — `mono.wall() == address(this)` — is
+an exact reading of "can pull from the vault" with no allowance read. Solady does not erode a max
+allowance, so it never goes stale. `Mono` checks `wall_.mono()` is itself before granting: the
+allowance is unbounded, so the address it points at is the entire protection.
+
+`_wall` stands down — falls through to the plain taxed swap, with nothing to unwind because every
+one of these is decided before anything moves — when the wall is unarmed, when the post-tax amount
+is zero, when the **vault** could not cover the worst case, or when the **PoolManager** could not.
+
+The vault one is unreachable arithmetic (the bid is under NAV and nobody can sell more MONO than
+exists, so the worst case is `S x (1-t) x I/S < I`) and is checked anyway: this is a branch where
+being wrong reverts inside someone else's swap, and §3.3 is explicit that the wall never bricks
+the pool.
+
+### The manager-balance ceiling
+
+The other one is real, and it is the least obvious thing in this contract.
+
+`poolManager.take` moves **real ERC-20**. Mid-swap, the MONO the manager is holding is the pools'
+**reserves** — the seller's own input does not arrive until the router settles, which happens after
+every hook has run. So the wall can only buy MONO the manager already has, and `_wall` checks
+`mono.balanceOf(poolManager) >= net` up front.
+
+Why it is usually slack: §3.5's POL is **one-sided MONO from NAV up**, so the book the wall
+defends is precisely the book that is full of MONO. It binds only once the pool has been bought
+out into mostly INDEX — and in that state the pool leg absorbs most of the sale by itself, so the
+fill left for the vault is small. The two move against each other.
+
+Why the bound is `net` and not the actual fill: the split is only known *after* the inner swap, and
+by then standing down is no longer free. `fill <= net` always, so the worst case is what can be
+tested before committing.
+
+**ponytail: conservative, and it degrades to the plain swap rather than to a revert.** The exact
+fix is to take the fill as an ERC-6909 claim and redeem it in `crank` — but a claim is not MONO
+and cannot be burned, so that trades this ceiling for a burn that is no longer same-transaction,
+which is the `[LAW]`. Revisit only with that resolved.
+
+`test_aBookTooMonoPoorToCoverTheFillStandsDown` pins the degraded path, and it is worth knowing
+that it exists: `test_aBookWithNoBidIsFilledEntirelyByTheWall` is **not** on its own evidence that
+a thin book works, because that test's manager is still fat with MONO from liquidity at other
+ticks.
+
+### Exact-output sells are refused
+
+§3.3 permits either mirroring the split or reverting. We revert (`ExactOutputSellUnsupported`),
+and only once the wall is armed — buys and pre-arming sells are untouched. Mirroring means running
+the whole split again in the output direction and moving the tax out of `_afterSwap` to pay for
+it: a lot of consequential code for a path routers essentially never take on a sell.
+
+**ponytail: refusal, not mirroring.** Build the mirror if a real integrator turns up needing
+exact-output sells.
+
+### Tax interaction
+
+The tax is charged on the **whole** input before the split, which is what §3.3's "sell tax applies
+to wall fills" asks for, and it means the split never has to know the tax exists.
+
 ## Storage
 
-One slot per pool for the accumulator: `int64` × 3 EMAs (mean tick × `PRECISION = 1e6`) +
-`uint32 lastUpdate` + `bool initialized` = 232 bits. A tick maxes at 887272, so a scaled EMA
+One slot per pool for the accumulator: `int64` × 2 EMAs (mean tick × `PRECISION = 1e6`) +
+`uint32 lastUpdate` + `bool initialized` = 168 bits. A tick maxes at 887272, so a scaled EMA
 reaches 8.9e11 — ten million times inside `int64`, resolving a millionth of a tick against a tick
-that is already only 1bp. One slot each for `buyTax` and `sellTax`.
+that is already only 1bp. One slot each for `buyTax` and `sellTax`. `vaultShareBips`, `wallTickBips` and `treasury` share
+one: 16 + 16 + 160 = 192 bits.
 
 `lastUpdate` wraps in 2106, and wraps correctly: modular subtraction still yields the true elapsed
 seconds unless a pool sits unswapped for 136 years. Same assumption v3 makes.
 
 ## Deploying
+
+`script/DeployMonoHook.s.sol`, in two phases. The split is the point: after phase 1 the oracle and
+the tax are live on a real pool and the **wall is still inert**, so all of it can be watched with
+real swaps before anything can reach the vault. Phase 2 is the irreversible step.
 
 A v4 hook's address **is** its permission set, so it has to be mined:
 
@@ -219,18 +351,32 @@ AFTER_INITIALIZE | BEFORE_SWAP | BEFORE_SWAP_RETURNS_DELTA | AFTER_SWAP | AFTER_
 = (1<<12) | (1<<7) | (1<<3) | (1<<6) | (1<<2) = 0x10CC
 ```
 
-1. deploy `Mono`, genesis-mint to set the opening NAV;
-2. mine an address with those flags — `v4-periphery/utils/HookMiner.sol`,
-   `HookMiner.find(deployer, flags, creationCode, constructorArgs)`;
-3. CREATE2-deploy `MonoHook(poolManager, mono, treasury, 60, 300, 900)` to it. `BaseHook`'s
-   constructor asserts the address matches `getHookPermissions`, so a bad mine reverts at deploy;
-4. initialize the MONO/INDEX pool with this hook in its `PoolKey`. `afterInitialize` refuses any
-   other pair (`WrongPair`) and seeds the accumulator from the opening price.
+**The wall added nothing to this.** It works entirely inside `beforeSwap` and its return delta,
+both of which the tax already needed — so the address the tax mines is the address the wall wants,
+and the `[LAW]` that a hook can never gain a permission cost nothing here.
+
+1. `DeployGenerousAuction.s.sol --sig 'deployMono()'` — deploy `Mono`, genesis-mint to set the
+   opening NAV;
+2. **`DeployMonoHook.s.sol`** — mines `0x10CC` against forge's CREATE2 deployer
+   (`0x4e59b4…4956C`, which is what a salted `new` broadcasts through), deploys, initialises the
+   MONO/INDEX pool **at NAV** so mNAV opens at 1.0, and calls `mono.setPool(manager, key)`.
+   `afterInitialize` refuses any other pair (`WrongPair`) and seeds the accumulator, so the oracle
+   is live from that block rather than dark until the first swap. `BaseHook`'s constructor asserts
+   the address matches `getHookPermissions()`, so a bad mine reverts at deploy —
+   `test_theMinedAddressSatisfiesTheHookItDeploys` proves the script's flag word and the
+   permissions agree before deploy day rather than during it;
+3. `DeployGenerousAuction.s.sol` phase 2 — the auction, whose constructor reads the premium gate
+   off this hook's EMA. It `require`s the pool is already named;
+4. **`DeployMonoHook.s.sol --sig 'armWall()'`** — `Mono.setWall`, granting this hook the vault's
+   one unbounded INDEX allowance. One shot, forever, and the only thing that turns the wall on.
 
 **Initialise with `LPFeeLibrary.DYNAMIC_FEE_FLAG` (`0x800000`) as `PoolKey.fee`.** Nothing sets a
 dynamic fee — the tax is hook-take, not an LP fee — but `updateDynamicLPFee` is gated on the pool
 having been *created* dynamic (`PoolManager.sol:340`) and the fee is in the `PoolKey`, so a static
 pool can never become one. Free now, a POL migration later. Same argument as the permission bits.
+
+`POOL_TICK_SPACING` is duplicated in both scripts and must match: the key hashes to a different
+(uninitialised) pool otherwise, and `setPool` refuses it.
 
 ### Routing, unresolved
 
@@ -247,11 +393,15 @@ after.
   inherited one; there was never one here.
 - **Consumer-side (auction), still outstanding:** a permissionless, incentivised crank for the
   rounds, and an **escalator lot-cap that is hardcoded and modest**. The second one matters here:
-  "the amount at stake per round is tiny" is the invariant the 1/5/15 τ choice leans on, and
+  "the amount at stake per round is tiny" is the invariant the short τ choice leans on, and
   `GenerousAuction.emissionPerRound` is currently an admin-settable `uint128` with no ceiling —
   `saleSupply` caps the total, not the round. Until that lands, the oracle's security rests on an
   admin's discretion.
-- **`Mono` is not wired to this yet.** It still reads the v3 stub `IUniswapV3Pool`. Migrating it
+- **`Mono` is wired to this contract now, both halves.** `setWall` arms the wall; `setPool` names
+  the v4 pool and, with it, pins this hook as the oracle. `Mono.emaPrice` / `emaPremiumBips` read
+  `meanSqrtPriceX96` here, and `GenerousAuction`'s premium gate reads those. The v3
+  `IUniswapV3Pool` stub is gone from `Mono` entirely. What is still NOT built is the §4 round
+  machinery that would consult the gate and throttle EVERY ROUND rather than once at deploy. Migrating it
   means `Mono.pool` (an `address`) becomes a `PoolKey`/`PoolId`, `setPool`'s `token0()/token1()`
   check becomes a `currency0/currency1` check that can also pin the hook address, and
   `poolPrice()` / `premiumCloseAmount()` reroute through `StateLibrary` and this hook.

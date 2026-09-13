@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// `_claim` re-seats after harvesting (round-8 fix). `claim(owner)` is permissionless, so the
@@ -14,7 +13,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// owner who un-staked to zero (not seated: the re-seat must be inert, not divide by zero), a
 /// position that exhausted exactly (leaves the heap instead of lingering as a stale seat), and
 /// `claimAndStake`, whose own re-seat must agree with the one `_claim` just did.
-contract RegressionClaimReseatEdges is Test {
+contract RegressionClaimReseatEdges is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -36,8 +35,7 @@ contract RegressionClaimReseatEdges is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
         auction = new GenerousAuction(
             IGenerousAuction.Config({
                 token: address(mono),

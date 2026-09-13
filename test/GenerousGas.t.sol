@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../src/GenerousAuction.sol";
 import {Mono} from "../src/Mono.sol";
 import {IGenerousAuction} from "../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../src/interfaces/IIndex.sol";
-import {MockPool} from "./MockPool.sol";
+import {MonoPoolBase} from "./MonoPoolBase.sol";
 import {TestERC20} from "./TestERC20.sol";
 
 /// Gas shape of `sync`. Separates the three costs that scale differently:
 ///   - `_gather` + `_pour` compute, measured through the `previewWindow` view (no SSTOREs);
 ///   - the writeback in `_pourWindow`, measured as `sync` minus the view;
 ///   - the skip walk over empty ticks, which is the only unbounded stretch.
-contract GenerousGasTest is Test {
+contract GenerousGasTest is MonoPoolBase {
     uint256 internal constant Q96 = 1 << 96;
     uint256 internal constant FLOOR = 1e18;
     uint256 internal constant SPACING = 1e16;
@@ -35,8 +34,7 @@ contract GenerousGasTest is Test {
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
         // NAV opens at 1.0; 1.25 in the pool clears the 1500 bip premium gate.
-        MockPool monoPool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(monoPool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         auction = new GenerousAuction(
             IGenerousAuction.Config({

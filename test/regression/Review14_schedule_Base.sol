@@ -1,22 +1,20 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Review-14 SCHEDULE lens. Harness plus an INDEPENDENT replay model of the emission schedule
 /// that knows nothing about `anchorBlock` / `anchorRounds` / `pendingFrom`: it keeps the list of
 /// generations `(fromBlock, roundBlocks, emissionPerRound)` that actually ran and integrates it.
-abstract contract Review14ScheduleBase is Test {
+abstract contract Review14ScheduleBase is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
-    MockPool internal pool;
 
     uint256 internal constant GENESIS = 1_000_000e18;
     uint256 internal constant Q96 = 1 << 96;
@@ -46,8 +44,7 @@ abstract contract Review14ScheduleBase is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
     }
 
     function _deploy(uint64 endBlock_, uint64 roundBlocks_, uint128 emission_) internal {

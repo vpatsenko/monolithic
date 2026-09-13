@@ -10,8 +10,11 @@ An ERC-20 (solady) whose supply is a claim on a single asset: INDEX. NAV is
 
 **The one invariant everything rests on: `nav()` never decreases.** Two halves:
 
-- **No outflow.** There is no path that moves INDEX out of the contract. Not `withdraw`,
-  not `redeem`, not a rescue. Ownership is mint-only.
+- **One outflow, and it is accretive.** There is no path that moves INDEX out by calling this
+  contract — not `withdraw`, not `redeem`, not a rescue. The single exception is the **wall**
+  (HANDBOOK §3.3): `setWall` grants [`MonoHook`](MonoHook.md) an allowance, and the hook spends it
+  buying MONO at `(1 - wallTick) x NAV` and burning it. The floor moves from `I/S` to
+  `(I - R*w)/(S - R)`, strictly greater for any `w < NAV` — so even the exit raises the floor.
 - **No dilutive mint.** `mint()` requires `assetsIn·S >= A·shares`, so post-mint NAV
   `(A + assetsIn)/(S + shares)` is >= pre-mint `A/S`. Checked exactly with
   `fullMulDivUp`, rounding against the harvester.
@@ -30,8 +33,11 @@ raises NAV with no entry point at all — that is how the tax sweep accrues.
 | `mint(shares, assetsIn, to)` | owner-only. First call seeds the vault and sets opening NAV (capped). Later calls are non-dilutive. |
 | `burn(shares)` | anyone, own balance. |
 | `nav()`, `totalIndex()` | the floor and the pot. |
-| `pool` | the MONO/INDEX v3 pool. Zero until `setPool`. |
-| `setPool(pool_)` | owner-only, callable **once**. |
+| `poolManager`, `poolId`, `hook`, `monoIsCurrency0` | the v4 pool and its oracle. Zero until `setPool`. |
+| `setPool(manager, key)` | `DEFAULT_ADMIN_ROLE`, callable **once**. Names the pool and pins the hook. |
+| `emaPrice(h)`, `emaPremiumBips(h)` | the same reads off the hook's EMA. What a mint gate uses. |
+| `wall` | the hook holding the vault's one allowance. Zero until `setWall`. |
+| `setWall(wall_)` | `DEFAULT_ADMIN_ROLE`, callable **once**. Arms the wall. |
 | `poolPrice()`, `premium()`, `premiumBips()` | the market, and how far it sits above the floor. |
 
 ## Roles
@@ -125,8 +131,23 @@ Issuance emits `Minted`. There is no `Withdraw` counterpart, because there is no
 - **Open redeem at par** leaves `(A − x·NAV)/(S − x)` unchanged: the floor stops ratcheting
   and the vault drains at flat NAV.
 
-The floor is defended by the **wall** — a pool-side bid below NAV whose fills burn — never by
-redemption.
+The floor is defended by the **wall** — a hook-side bid below NAV whose fills burn — never by
+redemption. The distinction is the tick: a redemption at par leaves NAV flat and drains the pot,
+while the wall pays strictly *under* NAV and retires the shares, so the same outflow ratchets the
+floor up. See [MonoHook](MonoHook.md#the-wall).
+
+### `setWall`, and why the allowance is unbounded
+
+`setWall` is `DEFAULT_ADMIN_ROLE`, one-shot, and stores the address and grants the allowance in
+the same call — so `wall != address(0)` is an exact reading of "armed". An allowance is not a
+budget here: the bound is arithmetic and it lives in the hook, which can only ever pay
+`(1 - wallTick) x NAV` per MONO and burns every MONO it buys. Capping it would buy nothing except
+a wall that bricks at some arbitrary cumulative volume. What a cap *would* protect against — a
+hostile hook — is bought instead by this being one-shot at a checked address: `Mono` requires
+`wall_.mono()` to be itself, and refuses a second call, so there is no path to re-point it later.
+
+Same argument as `setPool`'s pairing check, and a worse failure if skipped: a wrong `pool`
+misprices, a wrong `wall` approves a stranger for the whole vault.
 
 ## The pool, and the premium
 
@@ -139,9 +160,26 @@ premium() == int256(poolPrice()) - int256(nav())
 Both sides are **INDEX per MONO, 18 decimals**, which is why the comparison is a plain
 subtraction with no conversion. That is the reason the pool is MONO/INDEX and not MONO/stablecoin
 — a USD-denominated pool would drag Index's whole oracle path into this contract just to make the
-two numbers comparable. It also matches where this is going: the real venue is the v4 MONO/INDEX
-pool with the TWAP accumulator in our own hook (HANDBOOK §3.6), and `IUniswapV3Pool` is the
-placeholder standing in for it.
+two numbers comparable.
+
+The venue is the **v4 MONO/INDEX pool with our own hook in its key** (HANDBOOK §3.6). `Mono` does
+not import `IUniswapV3Pool` any more: spot and liquidity come off the `PoolManager` through
+`StateLibrary`, and the EMA comes off [`MonoHook`](MonoHook.md).
+
+### Two readings, and which one is for what
+
+| read | source | for |
+| --- | --- | --- |
+| `poolPrice()`, `premium()`, `premiumBips()` | **spot** (`slot0`) | monitoring, sizing, and the tax — which reads spot deliberately (§3.4) |
+| `emaPrice(h)`, `emaPremiumBips(h)` | the hook's EMA over `h` | **anything that mints** |
+
+Spot is still spot: movable inside a single block by anyone willing to push the pool and push it
+back. That is not a defect to be fixed — it is the honest answer to "what is the market paying",
+and §3.4 wants the tax on it precisely because pushing the price toward a cheaper rate *is* the
+taxed trade. What changed is that there is now a reading that is **not** movable that way, and the
+rule is simply: **do not gate a mint on spot.** `emaPrice` accrues at the price that STOOD, so
+faking it means holding the displacement across block boundaries, exposed to arbitrage and the
+sell tax the whole time. `test_aOneBlockPumpCannotOpenASale` is that property, asserted.
 
 `premiumBips()` is the same gap divided by the floor, in basis points — `+1500` is MONO trading
 15% above NAV. **A threshold belongs against this, not `premium()`**: an absolute gap of 0.15 INDEX
@@ -169,15 +207,18 @@ Standard v3 single-range math, branching on which side of the pair MONO sits:
 orientation. Returns 0 when the market is already at or below book, and 0 when the pool reports no
 liquidity.
 
-**Known ceiling — this is a sizing heuristic, not a quote.** `liquidity()` is the **in-range** `L`
-only. The formula is exact while the swap stays inside the current tick and **understates** the
-moment it would cross one, because real books hold liquidity outside the active tick that this
-cannot see. Walking the tick bitmap is the fix; it needs far more of the pool's surface than the
-`IUniswapV3Pool` stub exposes, and it lands with the same v4 hook work as everything else here.
+**Known ceiling — this is a sizing heuristic, not a quote.** `StateLibrary.getLiquidity` is the
+**in-range** `L` only. The formula is exact while the swap stays inside the current tick and
+**understates** the moment it would cross one, because real books hold liquidity outside the
+active tick that this cannot see. Walking the tick bitmap is the fix, and now that the pool is v4
+the surface to do it with is actually there — `StateLibrary` exposes the bitmap and per-tick net
+liquidity. It errs low, so a sale is sized conservatively rather than over-sold.
 
-Combined with the spot-price ceiling above: the number is read once, from a manipulable source,
-with an approximation that errs low. It is right for sizing a sale. It is not right for anything
-that has to be exact.
+This one still reads **spot**, deliberately. It is a question about pool mechanics — how much MONO
+it takes to walk the book from where it actually is down to NAV — and answering it from a lagging
+price would mis-size whenever the market had genuinely moved. The manipulation that matters is
+bounded by the EMA gate standing in front of it: to reach this call at all you must first clear
+`emaPremiumBips`, which a one-block push cannot do.
 
 ### Why `setPool` is not a constructor argument
 
@@ -186,23 +227,26 @@ addresses. So the pool address cannot be a constructor immutable, and cannot be 
 deploy. Same circularity as the [ownership handoff](#ownership) above. The deployment order is:
 
 1. deploy `Mono`;
-2. create the MONO/INDEX pool;
-3. owner calls `setPool(pool)`.
+2. mine and deploy `MonoHook` (its address is its permissions — see [MonoHook](MonoHook.md#deploying));
+3. initialise the MONO/INDEX v4 pool with that hook in its `PoolKey`;
+4. admin calls `setPool(manager, key)`.
 
-`setPool` is `DEFAULT_ADMIN_ROLE` and **one-shot** — a second call reverts `PoolAlreadySet`, so it is
-immutable in every sense except the EVM's. The one call it does get checks the pairing
-(`token0`/`token1` must be exactly MONO and INDEX, either order) and reverts `InvalidPool`
-otherwise. That check is only possible here, which is the argument for a setter over a CREATE2
-precomputed address: a wrong precomputed address would be unverifiable and permanent.
+`setPool` is `DEFAULT_ADMIN_ROLE` and **one-shot** — a second call reverts `PoolAlreadySet`, so it
+is immutable in every sense except the EVM's. The one call it gets checks four things, all
+`InvalidPool`:
 
-`poolPrice()` reverts `PoolNotSet` until step 3, so nothing reads a zero price by accident.
+- the key's currencies are exactly MONO and INDEX, either order;
+- the key has a hook at all;
+- that hook's `mono()` is **this** vault — a hook built for another `Mono` would read a different
+  NAV and tax a different book;
+- the pool is live on the `manager` it was handed, proved by a non-zero `slot0`. Without that a
+  wrong-but-plausible manager would leave every price read answering zero.
 
-### Known ceiling
+**Naming the pool is what pins the hook.** The hook lives inside the `PoolKey` and a v4 pool can
+never be re-hooked, so there is no separate oracle setter that could later be pointed elsewhere —
+which is the same reason a wrong precomputed address would be unverifiable and permanent.
 
-`slot0` is **spot** — movable inside a single block by anyone willing to push the pool and move it
-back. Same ceiling as `Index._poolPrice`, and the same upgrade (the v4 hook's TWAP accumulator).
-Until that lands, `premium()` is a monitoring read. **Do not gate anything that moves value on
-it.**
+`poolPrice()` reverts `PoolNotSet` until step 4, so nothing reads a zero price by accident.
 
 ## How MONO gets minted
 
@@ -217,7 +261,9 @@ detail:
 
 ## Deferred
 
-`ponytail:` in the source — the wall's outflow is not built here. Direction is still
-`[LOCKED]` in the handbook (keeper bid vs one-sided range order) and it must buy-and-burn
-atomically or it is just a drain. Own contract, own audit. Until then the vault has no exit,
-which is the safe default.
+`premiumCloseAmount()` is still single-range. Now that the pool is v4 the tick bitmap is reachable
+through `StateLibrary`, so walking it is a real option rather than a wish; it errs low today, which
+under-sizes a sale rather than over-selling one.
+
+The wall itself is no longer deferred: D25 put it in the hook (it has to be atomic with the sell
+it defends against, which a keeper cannot be), and `setWall` is the vault's half of it.

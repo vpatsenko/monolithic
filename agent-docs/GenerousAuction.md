@@ -404,8 +404,16 @@ leaves two minters, which the auction cannot detect and does not check.
 ### The premium gate
 
 A sale only opens into a premium. The constructor reads
-[`Mono.premiumBips()`](Mono.md#the-pool-and-the-premium) and reverts `PremiumTooLow` unless it is
-at least `Config.minPremiumBips` — 1,500 (15%) is the intended setting.
+[`Mono.emaPremiumBips(Horizon.Gate)`](Mono.md#two-readings-and-which-one-is-for-what) and reverts
+`PremiumTooLow` unless it is at least `Config.minPremiumBips` — 1,500 (15%) is the intended
+setting, which is HANDBOOK §4's gate threshold.
+
+**Off the hook's EMA, not spot**, and the reason is exactly this call site. A deployer who controls
+the pool could hold a pumped price for the one block the deploy lands in and open a sale into a
+market that is not really there. The EMA accrues at the price that STOOD, so a displacement pushed
+and released inside a block contributes nothing to it; faking it means holding the price across
+block boundaries, against arbitrage and the sell tax, for minutes. `test_aOneBlockPumpCannotOpenASale`
+pins that: spot at a 50% premium, the gate still shut.
 
 The reason is the mechanism, not caution. `claim` mints MONO against escrow valued at **NAV**; the
 market pays the **pool price**. The spread between them is the entire harvest. With MONO at or
@@ -421,7 +429,8 @@ This moves the deploy order — the pool has to exist and be registered before t
 constructed, or the constructor reverts `PoolNotSet`:
 
 1. deploy `Mono`, `mint` once to set the opening NAV;
-2. create the MONO/INDEX pool, `mono.setPool(pool)`;
+2. mine and deploy [`MonoHook`](MonoHook.md#deploying), initialise the MONO/INDEX v4 pool with it,
+   and `mono.setPool(manager, key)` — which pins the hook as the oracle;
 3. deploy `GenerousAuction` (the gate is read here);
 4. `mono.grantRole(MINTER_ROLE, auction)`;
 5. `mono.renounceRole(MINTER_ROLE, deployer)`.
@@ -446,13 +455,16 @@ itself every block would let anyone resize it by pushing the pool.
 The sizing math and its accuracy ceiling live in
 [Mono.md](Mono.md#sizing-the-premium-as-supply); the short version is that it reads only the
 *in-range* liquidity, so it is exact within the current tick and understates once a swap would
-cross one.
+cross one. Note it reads **spot**, unlike the gate above — it is a question about where the book
+actually is, and the EMA gate standing in front of it bounds how far spot can be pushed to reach
+it.
 
-**Known ceiling.** Checked **once**, at construction, against a spot `slot0` read. It stops a sale
-being opened into a flat market; it does not keep one honest afterwards, and a deployer who
-controls the pool can push it for a single block. The right home for this is `submitBid`, but
-gating every bid on a spot price hands anyone a cheap DoS — so it waits on the v4 TWAP hook
-(HANDBOOK §3.6), the same upgrade `Index._poolPrice` waits on.
+**Known ceiling.** Still checked **once**, at construction. The EMA made that bar expensive to
+cross rather than atomic to cross, but it is still a single reading at deploy: it stops a sale
+being opened into a flat market, and it does not keep a live sale honest if the premium evaporates
+the week after. The **per-round gate and throttle of HANDBOOK §4** are what close that — the same
+`Horizon.Gate` reading, consulted every round instead of once — and they are not built. The
+oracle they need now exists and is wired; the round machinery around it does not.
 
 `due()` is `emittedToDate() - tokensSold`, **capped at `saleSupply`**. Two constraints, and
 whichever binds first wins: the schedule paces the sale out over time, the premium sizes it. Once

@@ -1,22 +1,20 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Shared harness for the round-7 CONFIGURATION lens: deploy a fresh Mono/INDEX/pool triple at
-/// NAV 1.0 and pool price 1.25 (25% premium, saleSupply ~= 105.6k MONO from the MockPool's
-/// default L = 1e24), then a GenerousAuction with whatever Config the hazard under test needs.
-abstract contract Review7ConfigBase is Test {
+/// NAV 1.0 and pool price 1.25 (25% premium, saleSupply ~= 105.6k MONO from the pool's
+/// L = 1e24), then a GenerousAuction with whatever Config the hazard under test needs.
+abstract contract Review7ConfigBase is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
-    MockPool internal pool;
 
     uint256 internal constant GENESIS = 1_000_000e18;
     uint256 internal constant Q96 = 1 << 96;
@@ -33,8 +31,7 @@ abstract contract Review7ConfigBase is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
     }
 
     function _defaultConfig() internal view returns (IGenerousAuction.Config memory c) {

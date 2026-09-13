@@ -10,6 +10,7 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 
 import {IGenerousAuction} from "./interfaces/IGenerousAuction.sol";
 import {IMono} from "./interfaces/IMono.sol";
+import {IMonoHook} from "./interfaces/IMonoHook.sol";
 
 /// @title GenerousAuction
 /// @notice The harvest channel (HANDBOOK §3.5): bidders escrow INDEX, the schedule releases MONO,
@@ -278,11 +279,20 @@ contract GenerousAuction is IGenerousAuction, ReentrancyGuardTransient {
         // sale is just supply. Requires `Mono.setPool` to have run — deploy order is Mono, pool,
         // setPool, then this. Reverts `PoolNotSet` otherwise.
         //
-        // ponytail: checked ONCE, here, against a SPOT `slot0` read. It stops a sale being opened
-        // into a flat market; it does not keep one honest afterwards, and a deployer who controls
-        // the pool can push it for one block. Move this to `submitBid` once the v4 TWAP hook lands
-        // (HANDBOOK 3.6) — gating every bid on a spot price today just hands anyone a cheap DoS.
-        if (IMono(c.token).premiumBips() < int256(uint256(c.minPremiumBips))) revert PremiumTooLow();
+        // Read off the hook's GATE EMA, not spot. HANDBOOK §4 puts the gate on the 5-minute EMA,
+        // and the reason is exactly this call site: a deployer who controls the pool could hold a
+        // pumped spot price for the one block the deploy lands in and open a sale into a market
+        // that is not really there. The EMA accrues at the price that STOOD, so faking it means
+        // holding the displacement across block boundaries, against arbitrage and the sell tax,
+        // for minutes.
+        //
+        // ponytail: still checked ONCE, at construction. That is now a bar you cannot cross
+        // cheaply rather than one you cannot cross atomically, but it is still a single reading
+        // at deploy — it does not keep a live sale honest if the premium evaporates afterwards.
+        // The per-round gate of §4 is what closes that, and it is not built.
+        if (IMono(c.token).emaPremiumBips(IMonoHook.Horizon.Gate) < int256(uint256(c.minPremiumBips))) {
+            revert PremiumTooLow();
+        }
 
         // The premium, restated as supply: how much MONO sold into the pool would carry its price
         // back down to NAV. That is exactly what this sale exists to sell, so it is the sale's

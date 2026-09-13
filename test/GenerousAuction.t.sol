@@ -2,13 +2,13 @@
 pragma solidity ^0.8.26;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../src/GenerousAuction.sol";
 import {Mono} from "../src/Mono.sol";
 import {IMono} from "../src/interfaces/IMono.sol";
+import {IMonoHook} from "../src/interfaces/IMonoHook.sol";
 import {IGenerousAuction} from "../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../src/interfaces/IIndex.sol";
-import {MockPool} from "./MockPool.sol";
+import {MonoPoolBase} from "./MonoPoolBase.sol";
 import {TestERC20} from "./TestERC20.sol";
 
 /// Checks for `src/GenerousAuction.sol`.
@@ -18,11 +18,10 @@ import {TestERC20} from "./TestERC20.sol";
 /// contract's arithmetic grid rather than the paper's geometric ladder, which changes nothing that
 /// matters — the allocation depends only on each tick's weight and its capacity in tokens, and both
 /// are reproduced exactly.
-contract GenerousAuctionTest is Test {
+contract GenerousAuctionTest is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
-    MockPool internal monoPool;
 
     address internal seller = address(0xF1);
 
@@ -64,8 +63,7 @@ contract GenerousAuctionTest is Test {
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
         // NAV opens at 1.0; 1.25 in the pool is a 2500 bip premium, clear of the 1500 gate.
-        monoPool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(monoPool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         c.token = address(mono);
         auction = new GenerousAuction(c);
@@ -142,20 +140,19 @@ contract GenerousAuctionTest is Test {
         vm.expectRevert(IMono.PoolNotSet.selector);
         new GenerousAuction(c);
 
-        MockPool p = new MockPool(address(m), address(cur), 1.1e18); // +1000 bips
-        m.setPool(address(p));
+        _standMonoPool(m, address(cur), 1.1e18);
         assertEq(m.premiumBips(), int256(1_000), "10% premium");
         vm.expectRevert(IGenerousAuction.PremiumTooLow.selector);
         new GenerousAuction(c);
 
         // Exactly at the bar passes — the check is `<`, not `<=`.
-        p.setPrice(1.15e18);
+        _setMonoPoolPrice(1.15e18);
         assertEq(m.premiumBips(), int256(uint256(MIN_PREMIUM)), "15% premium");
         GenerousAuction ok = new GenerousAuction(c);
         assertEq(ok.minPremiumBips(), MIN_PREMIUM, "the bar it cleared is readable on-chain");
 
         // A discount is a negative premium, not a zero one, so it fails the same comparison.
-        p.setPrice(0.9e18);
+        _setMonoPoolPrice(0.9e18);
         assertLt(m.premiumBips(), int256(0), "below book");
         vm.expectRevert(IGenerousAuction.PremiumTooLow.selector);
         new GenerousAuction(c);
@@ -168,9 +165,39 @@ contract GenerousAuctionTest is Test {
 
         // And a premium of exactly zero clears that bar while sizing the sale at nothing — the
         // second gate catches what the first waves through.
-        p.setPrice(1e18);
+        _setMonoPoolPrice(1e18);
         assertEq(m.premiumCloseAmount(), 0, "no gap, no supply");
         vm.expectRevert(IGenerousAuction.NothingToSell.selector);
+        new GenerousAuction(c);
+    }
+
+    /// The gate reads the hook's EMA, not spot, and this is what that buys: a one-block price
+    /// push moves `premiumBips` all the way to the bar and the sale still will not open, because
+    /// the reading the gate actually consults has not moved at all. To clear it you would have to
+    /// HOLD the displacement across blocks — against arbitrage and the sell tax — which is the
+    /// whole point of HANDBOOK §4 putting the gate on a 5-minute EMA.
+    function test_aOneBlockPumpCannotOpenASale() public {
+        Mono m = new Mono(IIndex(address(cur)), 10 * GENESIS);
+        cur.mint(address(this), GENESIS);
+        cur.approve(address(m), GENESIS);
+        m.mint(GENESIS, GENESIS, address(this)); // NAV = 1.0
+
+        IGenerousAuction.Config memory c = _config(0);
+        c.token = address(m);
+        _standMonoPool(m, address(cur), 1e18); // flat market, nothing to harvest
+
+        // Spot says there is a 50% premium. It is one block old.
+        _pokeMonoPoolSpot(1.5e18);
+        assertEq(m.premiumBips(), int256(5_000), "spot moved");
+        assertEq(m.emaPremiumBips(IMonoHook.Horizon.Gate), int256(0), "the EMA did not");
+
+        vm.expectRevert(IGenerousAuction.PremiumTooLow.selector);
+        new GenerousAuction(c);
+
+        // Held, rather than flashed, the same displacement does open it — the gate is a cost, not
+        // a wall, and the cost is having to stand there.
+        vm.warp(block.timestamp + 64 * uint256(monoHook.tauSlow()));
+        assertEq(m.emaPremiumBips(IMonoHook.Horizon.Gate), int256(5_000), "the EMA caught up");
         new GenerousAuction(c);
     }
 
@@ -188,19 +215,18 @@ contract GenerousAuctionTest is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(m), GENESIS);
         m.mint(GENESIS, GENESIS, address(this));
-        MockPool p = new MockPool(address(m), address(cur), 1.25e18);
-        m.setPool(address(p));
+        _standMonoPool(m, address(cur), 1.25e18);
         assertApproxEqRel(m.premiumCloseAmount(), supply, 1e12, "same gap, same size");
 
-        p.setPrice(1.5e18);
+        _setMonoPoolPrice(1.5e18);
         uint256 wider = m.premiumCloseAmount();
         assertGt(wider, supply, "a wider premium is a bigger sale");
 
-        p.setLiquidity(2e24);
+        _setMonoPoolLiquidity(2e24);
         assertApproxEqRel(m.premiumCloseAmount(), wider * 2, 1e12, "twice the depth, twice the MONO");
 
         // No liquidity in the active tick: the gap exists but nothing can be sold into it.
-        p.setLiquidity(0);
+        _setMonoPoolLiquidity(0);
         assertEq(m.premiumCloseAmount(), 0);
     }
 

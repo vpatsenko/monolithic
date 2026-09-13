@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../src/GenerousAuction.sol";
 import {Mono} from "../src/Mono.sol";
 import {IGenerousAuction} from "../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../src/interfaces/IIndex.sol";
-import {MockPool} from "./MockPool.sol";
+import {MonoPoolBase} from "./MonoPoolBase.sol";
 import {TestERC20} from "./TestERC20.sol";
 
 /// Random walks over the whole surface — bid, withdraw, stake, unstake, claim, claimAndStake,
 /// sync, time — with the money and structure invariants checked after every step. The
 /// deterministic anchors (A.9, the §5 stake split, the two-level waterfall) pin exact numbers;
 /// this suite pins that NO reachable sequence breaks conservation, custody, or the heap.
-contract GenerousHandler is Test {
+contract GenerousHandler is MonoPoolBase {
     GenerousAuction public auction;
     Mono public mono;
     TestERC20 public cur;
@@ -172,7 +171,7 @@ contract GenerousHandler is Test {
 /// forge-config: default.invariant.runs = 15
 /// forge-config: default.invariant.depth = 60
 /// forge-config: default.invariant.fail-on-revert = false
-contract GenerousInvariantsTest is Test {
+contract GenerousInvariantsTest is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -190,8 +189,7 @@ contract GenerousInvariantsTest is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         auction = new GenerousAuction(
             IGenerousAuction.Config({

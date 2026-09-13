@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Review 7 / fairness lens — sync-cadence invariance.
@@ -19,7 +18,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// whole sweep and only re-anchors on the NEXT sync. A tick just outside the band is therefore
 /// admitted the moment the top dries if someone syncs then, and kept out until the whole window
 /// exhausts if nobody does. The allocation is a function of who called `sync` when.
-contract Review7FairnessSyncCadenceTest is Test {
+contract Review7FairnessSyncCadenceTest is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -42,9 +41,7 @@ contract Review7FairnessSyncCadenceTest is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        pool.setLiquidity(1e27);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18, 1e27);
         auction = new GenerousAuction(
             IGenerousAuction.Config({
                 token: address(mono),

@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
-contract Review10AuctionOwnership is Test {
+contract Review10AuctionOwnership is MonoPoolBase {
     GenerousAuction internal auction;
     TestERC20 internal currency;
     Mono internal mono;
@@ -25,7 +24,7 @@ contract Review10AuctionOwnership is Test {
         currency.mint(address(this), 1_000_000e18);
         currency.approve(address(mono), type(uint256).max);
         mono.mint(1_000_000e18, 1_000_000e18, address(this));
-        mono.setPool(address(new MockPool(address(mono), address(currency), 1.25e18)));
+        _standMonoPool(mono, address(currency), 1.25e18);
         auction = new GenerousAuction(
             IGenerousAuction.Config({
                 token: address(mono),

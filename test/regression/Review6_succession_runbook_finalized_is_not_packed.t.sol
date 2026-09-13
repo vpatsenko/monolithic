@@ -2,12 +2,11 @@
 pragma solidity ^0.8.26;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Review 6 / succession. The documented runbook (agent-docs/GenerousAuction.md "Succession",
@@ -17,7 +16,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// (src/GenerousAuction.sol:239) packs only what was SOLD at that instant. So a sale that is
 /// finalized with `due() == 0` can still hold `tokensSold > tokensMinted`, and revoking then
 /// bricks every claim on it (`_claim` -> `_mintPack` -> `Mono.mint` reverts, :1154 / :1099).
-contract Review6_succession_runbook_finalized_is_not_packed is Test {
+contract Review6_succession_runbook_finalized_is_not_packed is MonoPoolBase {
     Mono internal mono;
     TestERC20 internal cur;
 
@@ -38,8 +37,7 @@ contract Review6_succession_runbook_finalized_is_not_packed is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
         mono.renounceRole(mono.MINTER_ROLE(), address(this));
     }
 

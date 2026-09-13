@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 import {LibSort} from "solady/utils/LibSort.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Exposes the pure inter-tick solver so its rounding can be probed directly.
@@ -56,7 +55,7 @@ contract PourHarness is GenerousAuction {
 /// from `left` — up to a wei less per dry tick than the tick is then handed. The clamp is the
 /// only thing holding `sum <= supply`, and when it binds the LAST tick in window order (the
 /// lowest price) is shorted by the overshoot.
-contract Review7PourClampReachableTest is Test {
+contract Review7PourClampReachableTest is MonoPoolBase {
     PourHarness internal h;
     uint256 internal constant Q96 = 1 << 96;
     uint256 internal constant IDX_BITS = 8;
@@ -68,8 +67,7 @@ contract Review7PourClampReachableTest is Test {
         cur.mint(address(this), 1_000_000e18);
         cur.approve(address(mono), 1_000_000e18);
         mono.mint(1_000_000e18, 1_000_000e18, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
         // q = 0.9: rpow is inexact, so weights carry fractional Q96 bits. 0.9^44 < 1%.
         h = new PourHarness(
             IGenerousAuction.Config({

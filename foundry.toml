@@ -6,6 +6,12 @@ solc = "0.8.26"
 evm_version = "cancun"
 fs_permissions = [{ access = "read-write", path = "./web" }]
 
+# ponytail: raised from forge's 2^30 default. `Review14_schedule_frozen` sweeps ~100 fresh
+# Mono/pool triples in one test, and since `Mono` moved onto a real v4 pool each of those
+# deploys a `PoolManager`-backed pool and a hook instead of a 60-line mock. The test's logic is
+# unchanged; only the scaffolding got heavier. Lower it again if a test ever needs 8x this.
+gas_limit = 8589934592
+
 # ponytail: a second profile instead of widening `src` — `acrus_test/` is a live-rail probe and
 # must never end up in the default build. Run it with `FOUNDRY_PROFILE=arcus`.
 [profile.arcus]

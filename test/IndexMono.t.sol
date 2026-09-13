@@ -3,15 +3,20 @@ pragma solidity ^0.8.26;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {Test} from "forge-std/Test.sol";
 import {Index} from "../src/Index.sol";
 import {IIndex} from "../src/interfaces/IIndex.sol";
 import {Mono} from "../src/Mono.sol";
 import {IMono} from "../src/interfaces/IMono.sol";
 import {TestERC20} from "./TestERC20.sol";
 import {MockPool, MockStable} from "./MockPool.sol";
+import {MonoPoolBase} from "./MonoPoolBase.sol";
+import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
+import {IHooks} from "v4-core/interfaces/IHooks.sol";
+import {LPFeeLibrary} from "v4-core/libraries/LPFeeLibrary.sol";
+import {Currency} from "v4-core/types/Currency.sol";
+import {PoolKey} from "v4-core/types/PoolKey.sol";
 
-contract IndexMonoTest is Test {
+contract IndexMonoTest is MonoPoolBase {
     Index internal index;
     Mono internal mono;
     TestERC20 internal aapl;
@@ -307,53 +312,80 @@ contract IndexMonoTest is Test {
     // -------------------------------------------------------------- MONO
 
     function test_poolIsSetOnceAndMustHoldBothSides() public {
-        assertEq(mono.pool(), address(0), "unset at deploy");
+        _genesis(1_000e18, 1_000e18);
+        assertEq(address(mono.poolManager()), address(0), "unset at deploy");
         vm.expectRevert(IMono.PoolNotSet.selector);
         mono.poolPrice();
 
-        // A MONO/AAPL pool prices something else entirely.
-        MockPool wrong = new MockPool(address(mono), address(aapl), 1e18);
-        vm.expectRevert(IMono.InvalidPool.selector);
-        mono.setPool(address(wrong));
+        _wrap(address(this), 2_000e18);
+        _standMonoPool(mono, address(index), 1.25e18, 1e18);
+        assertEq(address(mono.poolManager()), address(monoManager));
+        assertEq(address(mono.hook()), address(monoHook), "naming the pool named the oracle");
 
-        MockPool monoPool = new MockPool(address(mono), address(index), 1.25e18);
+        // One shot: even the admin cannot repoint it.
+        vm.expectRevert(IMono.PoolAlreadySet.selector);
+        mono.setPool(IPoolManager(address(monoManager)), monoKey);
+    }
+
+    /// The key is checked before it is trusted: wrong pair, no hook, someone else's hook, and a
+    /// pool that is not live on the manager it was handed all fail the same way.
+    function test_setPoolRejectsAKeyItCannotTrust() public {
+        _genesis(1_000e18, 1_000e18);
+        _wrap(address(this), 2_000e18);
+        // Stand a good pool up on a THROWAWAY Mono, so this one is still unset and its hook exists.
+        Mono other = new Mono(index, 1e27);
+        index.approve(address(other), type(uint256).max);
+        other.mint(1_000e18, 1_000e18, address(this));
+        _standMonoPool(other, address(index), 1.25e18, 1e18);
+
+        // A MONO/AAPL pool prices something else entirely.
+        PoolKey memory wrongPair = _key(address(mono), address(aapl), address(monoHook));
+        vm.expectRevert(IMono.InvalidPool.selector);
+        mono.setPool(IPoolManager(address(monoManager)), wrongPair);
+
+        // No hook is no oracle.
+        PoolKey memory noHook = _key(address(mono), address(index), address(0));
+        vm.expectRevert(IMono.InvalidPool.selector);
+        mono.setPool(IPoolManager(address(monoManager)), noHook);
+
+        // A hook built for a different vault would read a different NAV and tax a different book.
+        vm.expectRevert(IMono.InvalidPool.selector);
+        mono.setPool(IPoolManager(address(monoManager)), monoKey);
+
+        // Right shape, never initialised: every price read would answer zero.
+        vm.expectRevert(IMono.InvalidPool.selector);
+        mono.setPool(IPoolManager(address(monoManager)), _key(address(mono), address(index), address(monoHook)));
+
         vm.prank(alice);
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, bytes32(0))
         );
-        mono.setPool(address(monoPool));
+        mono.setPool(IPoolManager(address(monoManager)), monoKey);
+    }
 
-        mono.setPool(address(monoPool));
-        assertEq(mono.pool(), address(monoPool));
-
-        // One shot: even the owner cannot repoint it.
-        MockPool other = new MockPool(address(mono), address(index), 1e18);
-        vm.expectRevert(IMono.PoolAlreadySet.selector);
-        mono.setPool(address(other));
+    function _key(address a, address b, address hook_) internal pure returns (PoolKey memory) {
+        (Currency c0, Currency c1) =
+            a < b ? (Currency.wrap(a), Currency.wrap(b)) : (Currency.wrap(b), Currency.wrap(a));
+        return PoolKey(c0, c1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 1, IHooks(hook_));
     }
 
     function test_premiumIsMarketMinusFloor() public {
         _genesis(1_000e18, 1_000e18);
         assertEq(mono.nav(), 1e18, "floor is 1 INDEX per MONO");
 
-        MockPool monoPool = new MockPool(address(mono), address(index), 1.25e18);
-        mono.setPool(address(monoPool));
+        _wrap(address(this), 2_000e18);
+        _standMonoPool(mono, address(index), 1.25e18, 1e18);
         assertApproxEqRel(mono.poolPrice(), 1.25e18, 1e12, "market reads through in NAV's unit");
         assertApproxEqRel(mono.premium(), int256(0.25e18), 1e12, "trading above book");
 
-        // The other side of the pair must give the same answer — which branch runs is an
-        // accident of address sort.
-        monoPool.flip();
-        assertApproxEqRel(mono.poolPrice(), 1.25e18, 1e12, "order-agnostic");
-
         // Below book is a NEGATIVE premium, not zero: that is the case the wall acts on.
-        monoPool.setPrice(0.8e18);
+        _setMonoPoolPrice(0.8e18);
         assertApproxEqRel(mono.premium(), int256(-0.2e18), 1e12, "trading at a discount");
 
         // The floor ratchets, the market does not follow: a donation lifts NAV and eats the premium.
         _wrap(address(this), 500e18);
         index.transfer(address(mono), 500e18);
-        assertEq(mono.nav(), 1.5e18, "donation raised the floor");
+        assertGt(mono.nav(), 1e18, "donation raised the floor");
         assertLt(mono.premium(), 0, "and pushed the market under it");
     }
 
@@ -478,13 +510,21 @@ contract IndexMonoTest is Test {
         assertFalse(_hasSelector(address(mono), "maxRedeem(address)"));
     }
 
-    /// The vault has no exit at all — not for admin, not for the issuer, not for anyone.
-    function test_vaultHasNoOutflow() public {
+    /// The vault moves INDEX out through exactly one door, and it is not a function on this
+    /// contract: the wall's allowance (HANDBOOK §3.1 `[LAW]`, §3.3). There is no admin exit, no
+    /// issuer exit, and no way to pull the pot by calling `Mono` itself — what `setWall` grants is
+    /// the right to buy MONO under NAV and burn it, which raises the floor rather than draining
+    /// it. See `test/MonoWall.t.sol` for the mechanism and `Mono.setWall` for why it is unbounded.
+    function test_theWallIsTheOnlyVaultOutflow() public {
         _genesis(1_000e18, 1_000e18);
         assertFalse(_hasSelector(address(mono), "withdrawForWall(uint256)"));
         assertFalse(_hasSelector(address(mono), "rescue(address,uint256)"));
         assertFalse(_hasSelector(address(mono), "sweep(address)"));
         assertEq(mono.totalIndex(), 1_000e18);
+
+        // Unarmed, the pot is unreachable by anyone.
+        assertEq(mono.wall(), address(0));
+        assertEq(index.allowance(address(mono), address(this)), 0);
     }
 
     /// A plain transfer in is the tax sweep: NAV rises, nobody is privileged.

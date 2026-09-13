@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Review 7 / organic-UX lens: prices that used to be live become UNBIDDABLE.
@@ -22,7 +21,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// Minimal: FAILS (no non-looping hint exists for 1.12 after six honest steps).
 /// Sim, fat book + keeper: 88 of 1593 honest bid attempts (5.5%) unbiddable — FAILS the 5% bar.
 /// Sim, thin book + keeper: 2073 of 3744 (55%), 40/40 verified on-chain by trying every hint.
-contract Review7OrganicUnbiddableMinimal is Test {
+contract Review7OrganicUnbiddableMinimal is MonoPoolBase {
     GenerousAuction internal auction;
     Mono internal mono;
     TestERC20 internal cur;
@@ -54,8 +53,7 @@ contract Review7OrganicUnbiddableMinimal is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
         auction = new GenerousAuction(
             IGenerousAuction.Config({
                 token: address(mono),

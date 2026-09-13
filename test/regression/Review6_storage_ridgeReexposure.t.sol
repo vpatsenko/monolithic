@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Review 6 / storage lens. Wall shaving + `_splice` are documented as making a dead ridge a
@@ -18,7 +17,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// stale chain below it (:745-754). Cost to the attacker: one bid. Cost to the book: O(chain)
 /// SLOADs plus a `SettleFirst` lockout of every weight-moving entry point until the chain is
 /// shaved 128 nodes per implicit sync (SYNC_TICKS, :122). Repeatable once per chain node.
-contract Review6StorageRidgeReexposureTest is Test {
+contract Review6StorageRidgeReexposureTest is MonoPoolBase {
     uint256 internal constant Q96 = 1 << 96;
     uint256 internal constant FLOOR = 1e18;
     uint256 internal constant SPACING = 1e16;
@@ -40,8 +39,7 @@ contract Review6StorageRidgeReexposureTest is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         auction = new GenerousAuction(
             IGenerousAuction.Config({

@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Exposes the moving-band solver over the REAL seated book, so `_extend`/`_admit`/`_rescale`/
@@ -37,7 +36,7 @@ contract SolveHarness is GenerousAuction {
 /// LENS: arithmetic. Independent reference model of the moving-band waterfall, fuzzed against the
 /// contract solver over a real book. Asserts conservation (sum <= supply), monotonicity of the
 /// total in supply, and agreement within a documented dust bound.
-contract Review8ArithmeticSolverModel is Test {
+contract Review8ArithmeticSolverModel is MonoPoolBase {
     SolveHarness internal h;
     Mono internal mono;
     TestERC20 internal cur;
@@ -55,8 +54,7 @@ contract Review8ArithmeticSolverModel is Test {
         cur.mint(address(this), 10_000_000e18);
         cur.approve(address(mono), 10_000_000e18);
         mono.mint(10_000_000e18, 10_000_000e18, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         h = new SolveHarness(
             IGenerousAuction.Config({

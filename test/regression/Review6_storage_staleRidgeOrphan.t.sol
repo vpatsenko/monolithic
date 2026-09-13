@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {GenerousAuction} from "../../src/GenerousAuction.sol";
 import {Mono} from "../../src/Mono.sol";
 import {IGenerousAuction} from "../../src/interfaces/IGenerousAuction.sol";
 import {IIndex} from "../../src/interfaces/IIndex.sol";
-import {MockPool} from "../MockPool.sol";
+import {MonoPoolBase} from "../MonoPoolBase.sol";
 import {TestERC20} from "../TestERC20.sol";
 
 /// Review 6 / storage lens. `_splice` (GenerousAuction.sol:725-730) cuts a walked dead run out
@@ -17,7 +16,7 @@ import {TestERC20} from "../TestERC20.sol";
 /// at any such price returns early, is never re-linked into the live list, and the sweep never
 /// visits it (or, when it becomes `highestTick`, the sweep follows its stale chain and skips the
 /// live list). Both tests below FAIL on current code.
-contract Review6StorageStaleRidgeOrphanTest is Test {
+contract Review6StorageStaleRidgeOrphanTest is MonoPoolBase {
     uint256 internal constant Q96 = 1 << 96;
     uint256 internal constant FLOOR = 1e18;
     uint256 internal constant SPACING = 1e16;
@@ -39,8 +38,7 @@ contract Review6StorageStaleRidgeOrphanTest is Test {
         cur.mint(address(this), GENESIS);
         cur.approve(address(mono), GENESIS);
         mono.mint(GENESIS, GENESIS, address(this));
-        MockPool pool = new MockPool(address(mono), address(cur), 1.25e18);
-        mono.setPool(address(pool));
+        _standMonoPool(mono, address(cur), 1.25e18);
 
         auction = new GenerousAuction(
             IGenerousAuction.Config({
